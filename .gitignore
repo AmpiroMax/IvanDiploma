@@ -1,0 +1,8 @@
+# VS Code
+.vscode
+
+# Python
+*.egg-info
+
+# Data
+data/raw
