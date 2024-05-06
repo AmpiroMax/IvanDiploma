@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 from PIL import Image
+import torchvision.transforms as transforms
+from typing import Optional
 
 
 def create_mask_from_image(image: Image) -> np.ndarray:
@@ -50,3 +52,28 @@ def create_image_from_mask(mask: np.array) -> Image:
 
     image = Image.fromarray(image)
     return image
+
+
+def test_on_image(model: torch.nn.Module, img_data: Optional[str | Image.Image]) -> Image:
+
+    image = None
+    if isinstance(img_data, str):
+        image = Image.open(img_data)
+    elif isinstance(img_data, Image.Image):
+        image = img_data
+    else:
+        raise ValueError(
+            "Не то передали в качестве переменной img_data. Ожидается str или PIL.Image")
+
+    image_to_tensor = transforms.Compose([
+        transforms.PILToTensor(),
+    ])
+
+    image_tensor = image_to_tensor(image).type(torch.FloatTensor)[None, ...]
+
+    with torch.no_grad():
+        predict = model.to("cuda")(image_tensor.to("cuda"))
+
+    label = create_image_from_mask(
+        torch.argmax(predict, dim=1)[0].cpu().numpy())
+    return label
