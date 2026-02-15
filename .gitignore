@@ -7,3 +7,10 @@
 
 # Data
 data/raw
+data/processed
+old/
+*.exe
+.conda/*
+
+# TensorBoard
+iternet/runs/*
