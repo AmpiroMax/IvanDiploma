@@ -118,8 +118,14 @@ def analyze_sample(prep: PreparedData, raw: RawData | None = None) -> Figures:
     return figs
 
 
-def init_model(prep: PreparedData, model_cfg: ModelConfig) -> IternetPerceiver:
-    """Step 4: initialize the model (untrained)."""
+def init_model(
+    prep: PreparedData,
+    model_cfg: ModelConfig,
+    checkpoint_path: str | Path | None = None,
+    *,
+    strict: bool = True,
+) -> IternetPerceiver:
+    """Step 4: initialize model and optionally load checkpoint weights."""
     num_classes = prep.sample.num_classes if model_cfg.num_classes <= 0 else max(model_cfg.num_classes, prep.sample.num_classes)
     model = IternetPerceiver(
         in_features=int(prep.sample.meas_tokens.shape[1]),
@@ -131,6 +137,20 @@ def init_model(prep: PreparedData, model_cfg: ModelConfig) -> IternetPerceiver:
         num_classes=num_classes,
         dropout=model_cfg.dropout,
     )
+    if checkpoint_path is not None:
+        ckpt = torch.load(Path(checkpoint_path), map_location="cpu")
+        state_dict: dict[str, torch.Tensor]
+        if isinstance(ckpt, dict) and "model" in ckpt and isinstance(ckpt["model"], dict):
+            state_dict = ckpt["model"]
+        elif isinstance(ckpt, dict) and "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
+            state_dict = ckpt["state_dict"]
+        elif isinstance(ckpt, dict) and all(isinstance(k, str) for k in ckpt.keys()):
+            state_dict = ckpt
+        else:
+            raise ValueError(
+                "Unsupported checkpoint format. Expected state_dict or dict with 'model'/'state_dict' keys."
+            )
+        model.load_state_dict(state_dict, strict=strict)
     return model
 
 
