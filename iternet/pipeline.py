@@ -105,7 +105,13 @@ def analyze_sample(prep: PreparedData, raw: RawData | None = None) -> Figures:
         meas_fig = plot_measurements_tokens(sample.meas_tokens.numpy(), title="Measurement tokens (debug)")
 
     figs = Figures(
-        mask_fig=plot_mask(sample.target_mask.numpy(), title="Target mask (from .ie2 bodies)", num_classes=sample.num_classes),
+        mask_fig=plot_mask(
+            sample.target_mask.numpy(),
+            title="Target mask (from .ie2 bodies)",
+            num_classes=sample.num_classes,
+            x_coords=sample.x_coords,
+            z_coords=sample.z_coords,
+        ),
         meas_fig=meas_fig,
         rho_fig=plot_true_resistivity(
             mask=sample.target_mask.numpy(),
@@ -193,7 +199,13 @@ def predict_and_visualize(
 
     # Keep the same "Step 3" visuals + add prediction
     figs = analyze_sample(prep=prep, raw=raw) if raw is not None else Figures(
-        mask_fig=plot_mask(prep.sample.target_mask.numpy(), title="Target mask (from .ie2 bodies)", num_classes=prep.sample.num_classes),
+        mask_fig=plot_mask(
+            prep.sample.target_mask.numpy(),
+            title="Target mask (from .ie2 bodies)",
+            num_classes=prep.sample.num_classes,
+            x_coords=prep.sample.x_coords,
+            z_coords=prep.sample.z_coords,
+        ),
         meas_fig=plot_measurements_tokens(prep.sample.meas_tokens.numpy(), title="Measurement tokens (debug)"),
         rho_fig=plot_true_resistivity(
             mask=prep.sample.target_mask.numpy(),
@@ -207,7 +219,13 @@ def predict_and_visualize(
         mask_fig=figs.mask_fig,
         meas_fig=figs.meas_fig,
         rho_fig=figs.rho_fig,
-        pred_fig=plot_prediction(pred, title=title, num_classes=prep.sample.num_classes),
+        pred_fig=plot_prediction(
+            pred,
+            title=title,
+            num_classes=prep.sample.num_classes,
+            x_coords=prep.sample.x_coords,
+            z_coords=prep.sample.z_coords,
+        ),
     )
     return pred, figs
 

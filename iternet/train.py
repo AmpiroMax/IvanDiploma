@@ -408,7 +408,12 @@ def train_segmentation(
                             num_classes = meta.get("num_classes", int(max(tgt_i.max(), pred_i.max()) + 1))
                             sample_id = meta.get("sample_id", f"sample_{global_idx:04d}")
                             fig = plot_target_vs_prediction(
-                                tgt_i, pred_i, num_classes=num_classes, title=f"Epoch {epoch} - {sample_id}"
+                                tgt_i,
+                                pred_i,
+                                num_classes=num_classes,
+                                title=f"Epoch {epoch} - {sample_id}",
+                                x_coords=meta.get("x_coords"),
+                                z_coords=meta.get("z_coords"),
                             )
                             out_path = epoch_img_dir / f"{sample_id}.png"
                             fig.savefig(out_path, dpi=100, bbox_inches="tight")

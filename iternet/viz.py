@@ -28,22 +28,38 @@ def _discrete_cmap(num_classes: int, base: str = "tab20") -> tuple[mcolors.Color
     return cmap, norm
 
 
-def plot_mask(mask: np.ndarray, *, title: str = "Target mask", num_classes: int | None = None) -> object:
+def _extent_from_coords(x_coords: np.ndarray | None, z_coords: np.ndarray | None) -> list[float] | None:
+    if x_coords is None or z_coords is None:
+        return None
+    # Z axis is shown downward, consistent with IE2 geometry plotting.
+    return [float(x_coords.min()), float(x_coords.max()), float(z_coords.max()), float(z_coords.min())]
+
+
+def plot_mask(
+    mask: np.ndarray,
+    *,
+    title: str = "Target mask",
+    num_classes: int | None = None,
+    x_coords: np.ndarray | None = None,
+    z_coords: np.ndarray | None = None,
+) -> object:
     fig, ax = plt.subplots(figsize=(10, 4))
     n = int(mask.max() + 1) if num_classes is None else int(num_classes)
     cmap, norm = _discrete_cmap(max(n, 1))
+    extent = _extent_from_coords(x_coords, z_coords)
     im = ax.imshow(
         mask,
         origin="upper",
-        aspect="auto",
+        aspect="equal" if extent is not None else "auto",
         cmap=cmap,
         norm=norm,
         interpolation="nearest",
+        extent=extent,
     )
     ax.set_title(title)
     fig.colorbar(im, ax=ax, shrink=0.8, ticks=list(range(max(n, 1))))
-    ax.set_xlabel("X index")
-    ax.set_ylabel("Z index")
+    ax.set_xlabel("X" if extent is not None else "X index")
+    ax.set_ylabel("Z (depth)" if extent is not None else "Z index")
     fig.tight_layout()
     return fig
 
@@ -59,22 +75,31 @@ def plot_measurements_tokens(tokens: np.ndarray, *, title: str = "Measurement to
     return fig
 
 
-def plot_prediction(pred_mask: np.ndarray, *, title: str = "Predicted mask", num_classes: int | None = None) -> object:
+def plot_prediction(
+    pred_mask: np.ndarray,
+    *,
+    title: str = "Predicted mask",
+    num_classes: int | None = None,
+    x_coords: np.ndarray | None = None,
+    z_coords: np.ndarray | None = None,
+) -> object:
     fig, ax = plt.subplots(figsize=(10, 4))
     n = int(pred_mask.max() + 1) if num_classes is None else int(num_classes)
     cmap, norm = _discrete_cmap(max(n, 1))
+    extent = _extent_from_coords(x_coords, z_coords)
     im = ax.imshow(
         pred_mask,
         origin="upper",
-        aspect="auto",
+        aspect="equal" if extent is not None else "auto",
         cmap=cmap,
         norm=norm,
         interpolation="nearest",
+        extent=extent,
     )
     ax.set_title(title)
     fig.colorbar(im, ax=ax, shrink=0.8, ticks=list(range(max(n, 1))))
-    ax.set_xlabel("X index")
-    ax.set_ylabel("Z index")
+    ax.set_xlabel("X" if extent is not None else "X index")
+    ax.set_ylabel("Z (depth)" if extent is not None else "Z index")
     fig.tight_layout()
     return fig
 
@@ -85,16 +110,28 @@ def plot_target_vs_prediction(
     *,
     num_classes: int | None = None,
     title: str = "Target vs Prediction",
+    x_coords: np.ndarray | None = None,
+    z_coords: np.ndarray | None = None,
 ) -> object:
     """Side-by-side target and prediction for validation saves."""
     n = int(max(target.max(), pred.max()) + 1) if num_classes is None else int(num_classes)
     cmap, norm = _discrete_cmap(max(n, 1))
+    extent = _extent_from_coords(x_coords, z_coords)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     for ax, arr, lbl in [(ax1, target, "Target"), (ax2, pred, "Prediction")]:
-        ax.imshow(arr, origin="upper", aspect="auto", cmap=cmap, norm=norm, interpolation="nearest")
+        ax.imshow(
+            arr,
+            origin="upper",
+            aspect="equal" if extent is not None else "auto",
+            cmap=cmap,
+            norm=norm,
+            interpolation="nearest",
+            extent=extent,
+        )
         ax.set_title(lbl)
-        ax.set_xlabel("X")
-        ax.set_ylabel("Z")
+        ax.set_xlabel("X" if extent is not None else "X index")
+        ax.set_ylabel("Z (depth)" if extent is not None else "Z index")
+        ax.grid(True, alpha=0.2)
     fig.suptitle(title)
     fig.tight_layout()
     return fig
