@@ -1,95 +1,110 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from matplotlib.path import Path as MplPath
-
-from iternet.io.ie2 import IE2Model
 from iternet.io.ie2d import IE2DResData
 from iternet.io.ie2d import IE2DMeasurement
 
 
 @dataclass(frozen=True)
 class PreprocessResult:
-    """Single training sample tensors."""
+    """Single training sample tensors for matrix regression."""
 
-    # Measurement tokens: (N_meas, F)
-    meas_tokens: torch.Tensor
-    # Query coords: (N_grid, 2) in normalized [-1,1]
-    grid_xy: torch.Tensor
-    # Target mask: (Z, X) with class ids
-    target_mask: torch.Tensor
+    # Measurement values from .dat last column, normalized to [0,1]: (1578,)
+    meas_values_01: torch.Tensor
+    # Target matrix in normalized domain [-1,1]: (Z, X), float32
+    target_matrix_norm: torch.Tensor
 
     # Grid for visualization / reconstruction
     x_coords: np.ndarray
     z_coords: np.ndarray
 
     # Metadata
-    num_classes: int
-    class_rho: dict[int, float]
+    meas_stats: dict[str, float]
+    target_stats: dict[str, float]
+    target_matrix_raw: np.ndarray
     value_kind: str
 
 
-def _grid_from_ie2(model: IE2Model, *, nx: int, nz: int, overrides: dict[str, float | None]) -> tuple[np.ndarray, np.ndarray]:
-    if overrides.get("x_min") is not None and overrides.get("x_max") is not None:
-        x_min = float(overrides["x_min"])
-        x_max = float(overrides["x_max"])
-    else:
-        # IMPORTANT: prefer true model extents from points.
-        # 'Box' in IE2 is often a plotting window and may truncate depth.
-        xs = [x for x, _ in model.points_xz.values()]
-        x_min, x_max = float(np.min(xs)), float(np.max(xs))
-
-    if overrides.get("z_min") is not None and overrides.get("z_max") is not None:
-        z_min = float(overrides["z_min"])
-        z_max = float(overrides["z_max"])
-    else:
-        # IMPORTANT: prefer true model extents from points (see note above).
-        zs = [z for _, z in model.points_xz.values()]
-        z_min, z_max = float(np.min(zs)), float(np.max(zs))
-
+def _grid_from_overrides(*, nx: int, nz: int, overrides: dict[str, float | None]) -> tuple[np.ndarray, np.ndarray]:
+    x_min = float(overrides.get("x_min") if overrides.get("x_min") is not None else -300.0)
+    x_max = float(overrides.get("x_max") if overrides.get("x_max") is not None else 300.0)
+    z_min = float(overrides.get("z_min") if overrides.get("z_min") is not None else 0.0)
+    z_max = float(overrides.get("z_max") if overrides.get("z_max") is not None else 150.0)
     x_coords = np.linspace(x_min, x_max, nx, dtype=np.float32)
     z_coords = np.linspace(z_min, z_max, nz, dtype=np.float32)
     return x_coords, z_coords
 
 
-def rasterize_ie2_model(
-    model: IE2Model,
+def load_target_matrix_npz(path: str | Path, *, expected_shape: tuple[int, int] | None = None) -> np.ndarray:
+    """Load 2D target matrix from .npz; uses first stored array."""
+    p = Path(path)
+    with np.load(p, allow_pickle=False) as d:
+        if len(d.files) == 0:
+            raise ValueError(f"NPZ file has no arrays: {p}")
+        arr = np.asarray(d[d.files[0]])
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D matrix in {p}, got shape {arr.shape}")
+    if expected_shape is not None and arr.shape != expected_shape:
+        if arr.T.shape == expected_shape:
+            arr = arr.T
+        else:
+            raise ValueError(f"Target matrix shape {arr.shape} does not match expected {expected_shape} for {p}")
+    return arr.astype(np.float32, copy=False)
+
+
+def normalize_target_matrix(target_raw: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
+    """
+    Normalize target matrix into [-1,1].
+
+    Uses sign-log compression first to stabilize large amplitudes:
+        signed_log = sign(v) * log1p(abs(v))
+    then min-max scaling to [-1,1].
+    """
+    signed_log = np.sign(target_raw) * np.log1p(np.abs(target_raw))
+    vmin = float(np.min(signed_log))
+    vmax = float(np.max(signed_log))
+    denom = max(vmax - vmin, 1e-9)
+    target_norm = (2.0 * (signed_log - vmin) / denom - 1.0).astype(np.float32)
+    stats = {"signed_log_min": vmin, "signed_log_max": vmax}
+    return target_norm, stats
+
+
+def denormalize_target_matrix(target_norm: np.ndarray, stats: dict[str, float]) -> np.ndarray:
+    """Map normalized model output [-1,1] back to original target value range."""
+    vmin = float(stats["signed_log_min"])
+    vmax = float(stats["signed_log_max"])
+    signed_log = ((np.clip(target_norm, -1.0, 1.0) + 1.0) * 0.5) * (vmax - vmin) + vmin
+    return (np.sign(signed_log) * (np.expm1(np.abs(signed_log)))).astype(np.float32)
+
+
+def build_meas_values_vector_01(
+    data: IE2DResData,
     *,
-    x_coords: np.ndarray,
-    z_coords: np.ndarray,
-    background_class: int = 0,
-) -> tuple[np.ndarray, dict[int, float]]:
+    expected_n: int = 1578,
+) -> tuple[np.ndarray, dict[str, float]]:
     """
-    Rasterize polygon bodies into a (Z,X) mask.
+    Build a fixed-length vector from the last column of each measurement row.
 
-    - Uses body.color as class id by default
-    - Later bodies override earlier ones (simple painter's algorithm)
+    Returns:
+      - values_01: (expected_n,) float32 in [0,1]
+      - stats: min/max before normalization
     """
+    vals = np.asarray([float(m.value) for m in data.measurements], dtype=np.float32)
+    if vals.shape[0] != expected_n:
+        raise ValueError(f"Expected {expected_n} measurements, got {vals.shape[0]}")
 
-    nz = len(z_coords)
-    nx = len(x_coords)
-    mask = np.full((nz, nx), background_class, dtype=np.int64)
-
-    # Precompute grid points (X,Z) flattened
-    xx, zz = np.meshgrid(x_coords, z_coords)
-    pts = np.stack([xx.reshape(-1), zz.reshape(-1)], axis=1)
-
-    class_rho: dict[int, float] = {}
-
-    for body in model.bodies:
-        poly = [model.points_xz[i] for i in body.point_indices if i in model.points_xz]
-        if len(poly) < 3:
-            continue
-        path = MplPath(np.array(poly, dtype=np.float32), closed=True)
-        inside = path.contains_points(pts).reshape(nz, nx)
-        mask[inside] = int(body.color)
-        class_rho[int(body.color)] = float(body.rho)
-
-    return mask, class_rho
+    vmin = float(np.min(vals))
+    vmax = float(np.max(vals))
+    denom = max(vmax - vmin, 1e-9)
+    vals_01 = ((vals - vmin) / denom).astype(np.float32)
+    vals_01 = np.clip(vals_01, 0.0, 1.0)
+    stats = {"meas_min": vmin, "meas_max": vmax}
+    return vals_01, stats
 
 
 def _dist(x1: float, z1: float, x2: float, z2: float) -> float:
@@ -279,7 +294,7 @@ def build_grid_queries(
 def preprocess_pair(
     *,
     ie2d: IE2DResData,
-    ie2: IE2Model,
+    target_matrix_path: str | Path,
     nx: int,
     nz: int,
     grid_overrides: dict[str, Any] | None = None,
@@ -287,34 +302,25 @@ def preprocess_pair(
     current_a: float = 1.0,
 ) -> PreprocessResult:
     """
-    Convert (measurements, model) into tensors for training/inference.
+    Convert (measurements, target matrix) into tensors for training/inference.
     """
 
     grid_overrides = grid_overrides or {}
-    x_coords, z_coords = _grid_from_ie2(ie2, nx=nx, nz=nz, overrides=grid_overrides)
-    mask, class_rho = rasterize_ie2_model(ie2, x_coords=x_coords, z_coords=z_coords)
+    x_coords, z_coords = _grid_from_overrides(nx=nx, nz=nz, overrides=grid_overrides)
+    target_raw = load_target_matrix_npz(target_matrix_path, expected_shape=(nz, nx))
+    target_norm, target_stats = normalize_target_matrix(target_raw)
 
-    num_classes = int(max([0, *class_rho.keys()]) + 1)
-
-    tokens = build_measurement_tokens(
-        ie2d,
-        x_min=float(x_coords.min()),
-        x_max=float(x_coords.max()),
-        z_min=float(z_coords.min()),
-        z_max=float(z_coords.max()),
-        value_kind=value_kind,
-        current_a=current_a,
-    )
-    grid_q = build_grid_queries(x_coords=x_coords, z_coords=z_coords)
+    _ = (value_kind, current_a)
+    meas_values_01, meas_stats = build_meas_values_vector_01(ie2d, expected_n=1578)
 
     return PreprocessResult(
-        meas_tokens=torch.from_numpy(tokens),
-        grid_xy=torch.from_numpy(grid_q),
-        target_mask=torch.from_numpy(mask),
+        meas_values_01=torch.from_numpy(meas_values_01),
+        target_matrix_norm=torch.from_numpy(target_norm),
         x_coords=x_coords,
         z_coords=z_coords,
-        num_classes=num_classes,
-        class_rho=class_rho,
+        meas_stats=meas_stats,
+        target_stats=target_stats,
+        target_matrix_raw=target_raw,
         value_kind=value_kind,
     )
 

@@ -4,7 +4,7 @@ iternet - ERT (electrical resistivity tomography) to geology interpretation.
 This package implements:
 - Parsers for IE2/IE2D-like formats
 - Preprocessing into tensors
-- Perceiver-style model: measurements set -> subsurface grid segmentation
+- Perceiver-style model: measurements set -> subsurface 2D matrix regression
 - Training utilities with TensorBoard logging
 """
 

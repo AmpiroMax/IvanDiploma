@@ -9,7 +9,7 @@ class DataConfig:
     """Paths to raw training data."""
 
     ie2d_res_path: Path
-    ie2_model_path: Path
+    target_matrix_path: Path
 
     # What is stored in the input file as the last column:
     # - "auto": use header (0=app.resistivity, 1=resistance)
@@ -25,22 +25,23 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class GridConfig:
-    """Grid definition for rasterized targets and model queries."""
+    """Grid definition for target matrix and model queries."""
 
-    # If provided, these override extents found in the .ie2 file.
+    # Physical extents for X/Z coordinates used by query grid and visualization.
     x_min: float | None = None
     x_max: float | None = None
     z_min: float | None = None
     z_max: float | None = None
 
-    # Output grid resolution.
-    look_nx: int = 256
-    look_nz: int = 128
+    # Output matrix resolution.
+    # By current task definition target matrix is 300x600 (Z,X).
+    look_nx: int = 600
+    look_nz: int = 300
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Perceiver-style set-to-grid segmentation model config."""
+    """Perceiver-style set-to-grid regression model config."""
 
     token_dim: int = 64
     latent_dim: int = 128
@@ -49,7 +50,7 @@ class ModelConfig:
     num_heads: int = 8
     dropout: float = 0.1
 
-    num_classes: int = 10  # will be overwritten from data by default
+    out_channels: int = 1
 
 
 @dataclass(frozen=True)

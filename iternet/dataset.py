@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from iternet.io import parse_ie2_model, parse_ie2d_res
+from iternet.io import parse_ie2d_res
 from iternet.preprocessing import PreprocessResult, preprocess_pair
 
 
@@ -15,17 +15,16 @@ class SamplePaths:
     """Pair of files for one training sample."""
 
     ie2d_res: Path
-    ie2_model: Path
+    target_matrix: Path
 
 
 class IternetDataset(Dataset):
     """
-    Dataset for (ie2d_res.dat, model.ie2) pairs.
+    Dataset for (ie2d_res.dat, target_matrix.npz) pairs.
 
     Each item returns:
-    - meas_tokens: (N_meas, F)
-    - grid_xy: (N_grid, 2)
-    - target_mask: (Z, X)
+    - meas_values_01: (1578,)
+    - target_matrix_norm: (Z, X)
     - meta: dict
     """
 
@@ -56,10 +55,9 @@ class IternetDataset(Dataset):
         cached = self._cache[idx]
         if cached is None:
             ie2d = parse_ie2d_res(sp.ie2d_res)
-            ie2 = parse_ie2_model(sp.ie2_model)
             cached = preprocess_pair(
                 ie2d=ie2d,
-                ie2=ie2,
+                target_matrix_path=sp.target_matrix,
                 nx=self.nx,
                 nz=self.nz,
                 grid_overrides=self.grid_overrides,
@@ -71,47 +69,33 @@ class IternetDataset(Dataset):
         meta = {
             "x_coords": cached.x_coords,
             "z_coords": cached.z_coords,
-            "num_classes": cached.num_classes,
-            "class_rho": cached.class_rho,
-            "sample_id": sp.ie2_model.stem,
+            "meas_stats": cached.meas_stats,
+            "target_stats": cached.target_stats,
+            "target_matrix_raw": cached.target_matrix_raw,
+            "sample_id": sp.target_matrix.stem,
         }
 
-        return cached.meas_tokens, cached.grid_xy, cached.target_mask, meta
+        return cached.meas_values_01, cached.target_matrix_norm, meta
 
 
 def collate_single(batch):
     """Collate function for batch_size=1 (keeps variable-length measurements)."""
     if len(batch) != 1:
         raise ValueError("collate_single expects batch_size=1")
-    meas_tokens, grid_xy, target_mask, meta = batch[0]
+    meas_values_01, target_matrix_norm, meta = batch[0]
     return (
-        meas_tokens.unsqueeze(0),  # (1, N, F)
-        grid_xy.unsqueeze(0),  # (1, G, 2)
-        target_mask.unsqueeze(0),  # (1, Z, X)
+        meas_values_01.unsqueeze(0),  # (1, 1578)
+        target_matrix_norm.unsqueeze(0),  # (1, Z, X)
         meta,
     )
 
 
 def collate_batch(batch):
     """
-    Collate for batch_size > 1: pad meas_tokens to max N in batch, stack grid_xy and target_mask.
-    Assumes fixed grid (nx, nz) so all samples have same grid shape.
+    Collate for batch_size > 1: stack meas vectors and target matrices.
     """
-    n_meas = [b[0].shape[0] for b in batch]
-    max_n = max(n_meas)
-    feat_dim = batch[0][0].shape[1]
-
-    meas_list = []
-    for i, (mt, gx, tm, meta) in enumerate(batch):
-        pad = max_n - mt.shape[0]
-        if pad > 0:
-            mt = torch.nn.functional.pad(mt, (0, 0, 0, pad), value=0.0)
-        meas_list.append(mt)
-
-    meas_tokens = torch.stack(meas_list, dim=0)
-    grid_xy = torch.stack([b[1] for b in batch], dim=0)
-    target_mask = torch.stack([b[2] for b in batch], dim=0)
-    meta = batch[0][3]  # meta from first sample (shared grid shape)
-
-    return meas_tokens, grid_xy, target_mask, meta
+    meas_values_01 = torch.stack([b[0] for b in batch], dim=0)  # (B, 1578)
+    target_matrix_norm = torch.stack([b[1] for b in batch], dim=0)  # (B, Z, X)
+    meta = batch[0][2]
+    return meas_values_01, target_matrix_norm, meta
 

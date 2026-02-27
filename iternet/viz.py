@@ -76,28 +76,32 @@ def plot_measurements_tokens(tokens: np.ndarray, *, title: str = "Measurement to
 
 
 def plot_prediction(
-    pred_mask: np.ndarray,
+    pred_matrix: np.ndarray,
     *,
-    title: str = "Predicted mask",
-    num_classes: int | None = None,
+    title: str = "Predicted matrix",
+    num_classes: int | None = None,  # kept for backward compatibility
     x_coords: np.ndarray | None = None,
     z_coords: np.ndarray | None = None,
 ) -> object:
+    _ = num_classes
     fig, ax = plt.subplots(figsize=(10, 4))
-    n = int(pred_mask.max() + 1) if num_classes is None else int(num_classes)
-    cmap, norm = _discrete_cmap(max(n, 1))
     extent = _extent_from_coords(x_coords, z_coords)
+    vmin = float(np.nanmin(pred_matrix))
+    vmax = float(np.nanmax(pred_matrix))
+    if abs(vmax - vmin) < 1e-12:
+        vmax = vmin + 1e-6
     im = ax.imshow(
-        pred_mask,
+        pred_matrix,
         origin="upper",
         aspect="equal" if extent is not None else "auto",
-        cmap=cmap,
-        norm=norm,
+        cmap="gray",
+        vmin=vmin,
+        vmax=vmax,
         interpolation="nearest",
         extent=extent,
     )
     ax.set_title(title)
-    fig.colorbar(im, ax=ax, shrink=0.8, ticks=list(range(max(n, 1))))
+    fig.colorbar(im, ax=ax, shrink=0.8, label="Value")
     ax.set_xlabel("X" if extent is not None else "X index")
     ax.set_ylabel("Z (depth)" if extent is not None else "Z index")
     fig.tight_layout()
@@ -108,23 +112,27 @@ def plot_target_vs_prediction(
     target: np.ndarray,
     pred: np.ndarray,
     *,
-    num_classes: int | None = None,
+    num_classes: int | None = None,  # kept for backward compatibility
     title: str = "Target vs Prediction",
     x_coords: np.ndarray | None = None,
     z_coords: np.ndarray | None = None,
 ) -> object:
     """Side-by-side target and prediction for validation saves."""
-    n = int(max(target.max(), pred.max()) + 1) if num_classes is None else int(num_classes)
-    cmap, norm = _discrete_cmap(max(n, 1))
+    _ = num_classes
     extent = _extent_from_coords(x_coords, z_coords)
+    vmin = float(np.nanmin([np.nanmin(target), np.nanmin(pred)]))
+    vmax = float(np.nanmax([np.nanmax(target), np.nanmax(pred)]))
+    if abs(vmax - vmin) < 1e-12:
+        vmax = vmin + 1e-6
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     for ax, arr, lbl in [(ax1, target, "Target"), (ax2, pred, "Prediction")]:
-        ax.imshow(
+        im = ax.imshow(
             arr,
             origin="upper",
             aspect="equal" if extent is not None else "auto",
-            cmap=cmap,
-            norm=norm,
+            cmap="gray",
+            vmin=vmin,
+            vmax=vmax,
             interpolation="nearest",
             extent=extent,
         )
@@ -132,6 +140,7 @@ def plot_target_vs_prediction(
         ax.set_xlabel("X" if extent is not None else "X index")
         ax.set_ylabel("Z (depth)" if extent is not None else "Z index")
         ax.grid(True, alpha=0.2)
+    fig.colorbar(im, ax=[ax1, ax2], shrink=0.8, label="Value")
     fig.suptitle(title)
     fig.tight_layout()
     return fig

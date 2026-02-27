@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class FeedForward(nn.Module):
@@ -44,10 +45,10 @@ class CrossAttentionBlock(nn.Module):
 
 class IternetPerceiver(nn.Module):
     """
-    Perceiver-style set-to-grid segmentation model.
+    Perceiver-style set-to-grid regression model.
 
     - Encodes variable-length measurements into a fixed set of latents
-    - Decodes per-grid-cell class logits via cross-attention from queries to latents
+    - Decodes per-grid-cell values via cross-attention from queries to latents
     """
 
     def __init__(
@@ -59,12 +60,16 @@ class IternetPerceiver(nn.Module):
         num_latents: int,
         num_layers: int,
         num_heads: int,
-        num_classes: int,
+        out_channels: int = 1,
+        grid_patches_z: int = 5,
+        grid_patches_x: int = 10,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
         self.in_features = in_features
-        self.num_classes = num_classes
+        self.out_channels = out_channels
+        self.grid_patches_z = int(grid_patches_z)
+        self.grid_patches_x = int(grid_patches_x)
 
         self.token_proj = nn.Sequential(
             nn.Linear(in_features, token_dim),
@@ -78,31 +83,35 @@ class IternetPerceiver(nn.Module):
             [CrossAttentionBlock(latent_dim, num_heads=num_heads, dropout=dropout) for _ in range(num_layers)]
         )
 
-        # Query embedding from normalized (x,z) -> latent_dim
-        self.query_mlp = nn.Sequential(
-            nn.Linear(2, latent_dim),
-            nn.GELU(),
-            nn.Linear(latent_dim, latent_dim),
-        )
+        # Fixed learned queries for each PATCH (no per-pixel grid queries)
+        num_patches = self.grid_patches_z * self.grid_patches_x
+        self.grid_queries = nn.Parameter(torch.randn(num_patches, latent_dim) * 0.02)
 
         self.decoder = CrossAttentionBlock(latent_dim, num_heads=num_heads, dropout=dropout)
         self.head = nn.Sequential(
             nn.LayerNorm(latent_dim),
-            nn.Linear(latent_dim, num_classes),
+            nn.Linear(latent_dim, out_channels),
         )
 
-    def forward(self, meas_tokens: torch.Tensor, grid_xy: torch.Tensor, *, grid_shape: tuple[int, int]) -> torch.Tensor:
+    def forward(self, meas_values_01: torch.Tensor, *, grid_shape: tuple[int, int] = (300, 600)) -> torch.Tensor:
         """
         Args:
-            meas_tokens: (B, N_meas, F)
-            grid_xy: (B, N_grid, 2) normalized [-1,1]
+            meas_values_01: (B, 1578) or (B, 1578, 1) values in [0,1]
             grid_shape: (Z, X) to reshape the output
         Returns:
-            logits: (B, C, Z, X)
+            prediction: (B, out_channels, Z, X)
         """
 
+        if meas_values_01.ndim == 2:
+            meas_tokens = meas_values_01.unsqueeze(-1)  # (B, 1578, 1)
+        elif meas_values_01.ndim == 3:
+            meas_tokens = meas_values_01
+        else:
+            raise ValueError(f"Expected (B,1578) or (B,1578,1), got {tuple(meas_values_01.shape)}")
+
         b, n_meas, _ = meas_tokens.shape
-        _, n_grid, _ = grid_xy.shape
+        if n_meas != 1578:
+            raise ValueError(f"Expected 1578 measurements, got {n_meas}")
 
         tokens = self.token_proj(meas_tokens)  # (B, N_meas, D)
         latents = self.latents.unsqueeze(0).expand(b, -1, -1)  # (B, L, D)
@@ -110,11 +119,24 @@ class IternetPerceiver(nn.Module):
         for layer in self.encoder_layers:
             latents = layer(latents, tokens)
 
-        queries = self.query_mlp(grid_xy)  # (B, G, D)
-        decoded = self.decoder(queries, latents)  # (B, G, D)
-        logits_flat = self.head(decoded)  # (B, G, C)
-
         z, x = grid_shape
-        logits = logits_flat.transpose(1, 2).reshape(b, self.num_classes, z, x)
-        return logits
+        if z % self.grid_patches_z != 0 or x % self.grid_patches_x != 0:
+            raise ValueError(
+                f"grid_shape {grid_shape} must be divisible by patch grid "
+                f"({self.grid_patches_z}, {self.grid_patches_x})"
+            )
+        g = self.grid_patches_z * self.grid_patches_x
+        if self.grid_queries.shape[0] != g:
+            raise ValueError(
+                f"Model grid_queries has {self.grid_queries.shape[0]} patches, but expected {g} "
+                f"from ({self.grid_patches_z}*{self.grid_patches_x})."
+            )
+        queries = self.grid_queries.unsqueeze(0).expand(b, -1, -1)  # (B, G, D)
+        decoded = self.decoder(queries, latents)  # (B, G, D)
+        pred_flat = self.head(decoded)  # (B, G, out_channels)
+
+        # Patch-grid prediction: (B, C, Pz, Px) -> upsample to (B, C, Z, X)
+        pred_patches = pred_flat.transpose(1, 2).reshape(b, self.out_channels, self.grid_patches_z, self.grid_patches_x)
+        pred = F.interpolate(pred_patches, size=(z, x), mode="bilinear", align_corners=False)
+        return pred
 
