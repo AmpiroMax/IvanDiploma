@@ -75,6 +75,66 @@ def plot_measurements_tokens(tokens: np.ndarray, *, title: str = "Measurement to
     return fig
 
 
+def plot_two_channel_image(
+    x: np.ndarray,
+    *,
+    title: str = "Input (2-channel)",
+    channel_names: tuple[str, str] = ("ch0", "ch1"),
+) -> object:
+    """
+    Visualize a 2-channel input as:
+    - channel 0 (grayscale)
+    - channel 1 (grayscale)
+    - combined RG image (R=ch0, G=ch1)
+
+    Accepts shapes (2, H, W) or (H, W, 2).
+    """
+    arr = np.asarray(x)
+    if arr.ndim != 3:
+        raise ValueError(f"Expected 3D array, got shape {arr.shape}")
+    if arr.shape[0] == 2:
+        ch0, ch1 = arr[0], arr[1]
+    elif arr.shape[-1] == 2:
+        ch0, ch1 = arr[..., 0], arr[..., 1]
+    else:
+        raise ValueError(f"Expected 2-channel array, got shape {arr.shape}")
+
+    def to01(a: np.ndarray) -> np.ndarray:
+        a = a.astype(np.float32, copy=False)
+        vmin = float(np.nanmin(a))
+        vmax = float(np.nanmax(a))
+        denom = max(vmax - vmin, 1e-9)
+        return np.clip((a - vmin) / denom, 0.0, 1.0)
+
+    ch0_01 = to01(ch0)
+    ch1_01 = to01(ch1)
+    rgb = np.zeros((ch0_01.shape[0], ch0_01.shape[1], 3), dtype=np.float32)
+    rgb[..., 0] = ch0_01
+    rgb[..., 1] = ch1_01
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    ax0, ax1, ax2 = axes
+    im0 = ax0.imshow(ch0_01, origin="upper", cmap="gray", interpolation="nearest")
+    ax0.set_title(channel_names[0])
+    fig.colorbar(im0, ax=ax0, shrink=0.8)
+
+    im1 = ax1.imshow(ch1_01, origin="upper", cmap="gray", interpolation="nearest")
+    ax1.set_title(channel_names[1])
+    fig.colorbar(im1, ax=ax1, shrink=0.8)
+
+    ax2.imshow(rgb, origin="upper", interpolation="nearest")
+    ax2.set_title("Combined (R=ch0, G=ch1)")
+
+    for ax in axes:
+        ax.set_xlabel("X index")
+        ax.set_ylabel("Y index")
+        ax.grid(True, alpha=0.15)
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    return fig
+
+
 def plot_prediction(
     pred_matrix: np.ndarray,
     *,
@@ -141,6 +201,115 @@ def plot_target_vs_prediction(
         ax.set_ylabel("Z (depth)" if extent is not None else "Z index")
         ax.grid(True, alpha=0.2)
     fig.colorbar(im, ax=[ax1, ax2], shrink=0.8, label="Value")
+    fig.suptitle(title)
+    fig.tight_layout()
+    return fig
+
+
+def _robust_limits(a: np.ndarray, *, lo: float = 1.0, hi: float = 99.0) -> tuple[float, float]:
+    a = np.asarray(a, dtype=np.float32)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return 0.0, 1.0
+    vmin = float(np.percentile(a, lo))
+    vmax = float(np.percentile(a, hi))
+    if abs(vmax - vmin) < 1e-12:
+        vmax = vmin + 1e-6
+    return vmin, vmax
+
+
+def plot_abcd_components(
+    *,
+    a: np.ndarray,
+    b: np.ndarray,
+    c: np.ndarray,
+    d: np.ndarray,
+    title: str = "A/B/C/D components",
+    x_coords: np.ndarray | None = None,
+    z_coords: np.ndarray | None = None,
+) -> object:
+    """
+    Visualize polynomial decomposition for a single sample.
+
+    Args:
+        a,b,c,d: (Z, X) coefficient maps in:
+            y = A*1000 + B*100 + C*10 + D
+        d: (Z, X) delta D
+    """
+    a = np.asarray(a)
+    b = np.asarray(b)
+    c = np.asarray(c)
+    d = np.asarray(d)
+    if not (a.shape == b.shape == c.shape == d.shape) or a.ndim != 2:
+        raise ValueError(f"Expected a,b,c,d all (Z,X), got {a.shape}, {b.shape}, {c.shape}, {d.shape}")
+
+    extent = _extent_from_coords(x_coords, z_coords)
+
+    avmin, avmax = _robust_limits(a)
+    bvmin, bvmax = _robust_limits(b)
+    cvmin, cvmax = _robust_limits(c)
+    dvmin, dvmax = _robust_limits(d)
+
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+    axa, axb, axc, axd = axes
+
+    ima = axa.imshow(
+        a,
+        origin="upper",
+        aspect="equal" if extent is not None else "auto",
+        cmap="viridis",
+        vmin=avmin,
+        vmax=avmax,
+        interpolation="nearest",
+        extent=extent,
+    )
+    axa.set_title("A (×1000)")
+    fig.colorbar(ima, ax=axa, shrink=0.85)
+
+    imb = axb.imshow(
+        b,
+        origin="upper",
+        aspect="equal" if extent is not None else "auto",
+        cmap="viridis",
+        vmin=bvmin,
+        vmax=bvmax,
+        interpolation="nearest",
+        extent=extent,
+    )
+    axb.set_title("B (×100)")
+    fig.colorbar(imb, ax=axb, shrink=0.85)
+
+    imc = axc.imshow(
+        c,
+        origin="upper",
+        aspect="equal" if extent is not None else "auto",
+        cmap="viridis",
+        vmin=cvmin,
+        vmax=cvmax,
+        interpolation="nearest",
+        extent=extent,
+    )
+    axc.set_title("C (×10)")
+    fig.colorbar(imc, ax=axc, shrink=0.85)
+
+    imd = axd.imshow(
+        d,
+        origin="upper",
+        aspect="equal" if extent is not None else "auto",
+        cmap="viridis",
+        vmin=dvmin,
+        vmax=dvmax,
+        interpolation="nearest",
+        extent=extent,
+    )
+    axd.set_title("D (×1)")
+    fig.colorbar(imd, ax=axd, shrink=0.85)
+
+    for ax in axes:
+        ax.set_xlabel("X" if extent is not None else "X index")
+        ax.set_ylabel("Z (depth)" if extent is not None else "Z index")
+        ax.grid(True, alpha=0.15)
+
     fig.suptitle(title)
     fig.tight_layout()
     return fig

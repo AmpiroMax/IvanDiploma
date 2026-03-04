@@ -6,7 +6,12 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class DataConfig:
-    """Paths to raw training data."""
+    """Paths to training data.
+
+    Input can be:
+    - legacy `.dat` (ERT measurements)
+    - processed `.npz` (matrix_data with 2 channels)
+    """
 
     ie2d_res_path: Path
     target_matrix_path: Path
@@ -41,21 +46,35 @@ class GridConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Perceiver-style set-to-grid regression model config."""
+    """U-Net + polynomial projection model config (regression)."""
 
-    token_dim: int = 64
-    latent_dim: int = 128
-    num_latents: int = 256
-    num_layers: int = 4
-    num_heads: int = 8
-    dropout: float = 0.1
+    # Processed input: matrix_data -> (B, 2, 29, 47)
+    in_channels: int = 2
 
+    # Patch embedding (Swin/ViT-like): split input into patches using stride-conv
+    # patch_size=2 works well for (29,47) with padding to multiples.
+    patch_size: int = 2
+
+    # U-Net width multiplier (32 is a good default; deeper model benefits from 48/64)
+    base_channels: int = 32
+
+    # Depth of U-Net in patch space (number of downsamplings)
+    depth: int = 4
+
+    # How many residual conv blocks per stage (encoder/decoder/bottleneck)
+    blocks_per_stage: int = 3
+
+    # Extra conv blocks right after patch embedding
+    stem_blocks: int = 2
+
+    # The polynomial projection outputs a single scalar per pixel:
+    # y = A*1000 + B*100 + C*10 + D
     out_channels: int = 1
 
 
 @dataclass(frozen=True)
 class TrainConfig:
-    """Training parameters."""
+    """Training parameters (regression)."""
 
     batch_size: int = 1
     epochs: int = 50
@@ -65,16 +84,14 @@ class TrainConfig:
     device: str = "cuda"
     log_dir: Path = Path("iternet/runs")
 
-    # Ignore background label 0 by default (unknown/outside bodies)
-    ignore_index: int = 0
+    # Loss weights (total = mse_weight*MSE + mae_weight*MAE + boundary_loss_weight*BoundaryMAE)
+    mse_weight: float = 1.0
+    mae_weight: float = 0.05
 
-    # Boundary weighting: pixels near class boundaries get higher loss
+    # Boundary loss: focus on high-gradient areas in the target (edges), dilated by radius.
+    # The boundary term itself is MAE computed on the boundary mask.
     boundary_weight_factor: float = 3.0
     boundary_weight_radius: int = 4
-
-    # Loss weights: ce_weight*CE + dice_weight*Dice + boundary_weight*BoundaryLoss (all terms non-negative)
-    ce_weight: float = 3.0
-    dice_weight: float = 0.3
     boundary_loss_weight: float = 0.3
 
     # Logging cadence

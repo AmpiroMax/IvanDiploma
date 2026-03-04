@@ -14,9 +14,11 @@ from iternet.io.ie2d import IE2DMeasurement
 class PreprocessResult:
     """Single training sample tensors for matrix regression."""
 
-    # Measurement values from .dat last column, normalized to [0,1]: (1578,)
-    meas_values_01: torch.Tensor
-    # Target matrix in normalized domain [-1,1]: (Z, X), float32
+    # Normalized model input:
+    # - from .dat: (1578,) values in [0,1]
+    # - from .npz (matrix_data): (2, H, W) values in [0,1]
+    input_tensor_01: torch.Tensor
+    # Target matrix (raw values, no normalization): (Z, X), float32
     target_matrix_norm: torch.Tensor
 
     # Grid for visualization / reconstruction
@@ -24,7 +26,9 @@ class PreprocessResult:
     z_coords: np.ndarray
 
     # Metadata
-    meas_stats: dict[str, float]
+    input_kind: str  # "meas_values" | "matrix_data"
+    input_stats: dict[str, float]
+    input_tensor_raw: np.ndarray
     target_stats: dict[str, float]
     target_matrix_raw: np.ndarray
     value_kind: str
@@ -55,6 +59,74 @@ def load_target_matrix_npz(path: str | Path, *, expected_shape: tuple[int, int] 
         else:
             raise ValueError(f"Target matrix shape {arr.shape} does not match expected {expected_shape} for {p}")
     return arr.astype(np.float32, copy=False)
+
+
+def load_input_matrix_npz(path: str | Path) -> np.ndarray:
+    """
+    Load input matrix from processed .npz (expected key: 'matrix_data').
+
+    Expected shapes:
+      - (H, W, 2)  -> returned as (2, H, W)
+      - (2, H, W)  -> returned as-is
+    """
+    p = Path(path)
+    with np.load(p, allow_pickle=False) as d:
+        if len(d.files) == 0:
+            raise ValueError(f"NPZ file has no arrays: {p}")
+        if "matrix_data" in d.files:
+            arr = np.asarray(d["matrix_data"])
+        else:
+            arr = np.asarray(d[d.files[0]])
+
+    if arr.ndim != 3:
+        raise ValueError(f"Expected 3D input matrix in {p}, got shape {arr.shape}")
+
+    # Normalize to CHW with C=2
+    if arr.shape[-1] == 2:
+        arr = np.transpose(arr, (2, 0, 1))  # (2, H, W)
+    elif arr.shape[0] == 2:
+        pass  # already (2, H, W)
+    else:
+        raise ValueError(f"Expected input with 2 channels in {p}, got shape {arr.shape}")
+
+    return arr.astype(np.float32, copy=False)
+
+
+def normalize_input_tensor_01(x_raw: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
+    """
+    Normalize input into [0,1].
+
+    - For 1D vectors: min-max across the vector.
+    - For CHW images: per-channel min-max.
+    """
+    eps = 1e-9
+    x = x_raw.astype(np.float32, copy=False)
+
+    if x.ndim == 1:
+        vmin = float(np.min(x))
+        vmax = float(np.max(x))
+        denom = max(vmax - vmin, eps)
+        x01 = np.clip((x - vmin) / denom, 0.0, 1.0).astype(np.float32)
+        stats = {"in_min": vmin, "in_max": vmax}
+        return x01, stats
+
+    if x.ndim == 3:
+        if x.shape[0] != 2:
+            raise ValueError(f"Expected CHW with C=2, got {x.shape}")
+        mins = x.reshape(2, -1).min(axis=1)
+        maxs = x.reshape(2, -1).max(axis=1)
+        denom = np.maximum(maxs - mins, eps)
+        x01 = (x - mins[:, None, None]) / denom[:, None, None]
+        x01 = np.clip(x01, 0.0, 1.0).astype(np.float32)
+        stats = {
+            "ch0_min": float(mins[0]),
+            "ch0_max": float(maxs[0]),
+            "ch1_min": float(mins[1]),
+            "ch1_max": float(maxs[1]),
+        }
+        return x01, stats
+
+    raise ValueError(f"Unsupported input ndim for normalization: {x.ndim} (shape={x.shape})")
 
 
 def normalize_target_matrix(target_raw: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
@@ -293,7 +365,8 @@ def build_grid_queries(
 
 def preprocess_pair(
     *,
-    ie2d: IE2DResData,
+    ie2d: IE2DResData | None = None,
+    input_matrix_path: str | Path | None = None,
     target_matrix_path: str | Path,
     nx: int,
     nz: int,
@@ -308,17 +381,37 @@ def preprocess_pair(
     grid_overrides = grid_overrides or {}
     x_coords, z_coords = _grid_from_overrides(nx=nx, nz=nz, overrides=grid_overrides)
     target_raw = load_target_matrix_npz(target_matrix_path, expected_shape=(nz, nx))
-    target_norm, target_stats = normalize_target_matrix(target_raw)
+    # Output normalization is disabled: we train and predict raw values directly.
+    target_norm = target_raw.astype(np.float32, copy=False)
+    target_stats = {"target_min": float(np.min(target_norm)), "target_max": float(np.max(target_norm))}
 
-    _ = (value_kind, current_a)
-    meas_values_01, meas_stats = build_meas_values_vector_01(ie2d, expected_n=1578)
+    input_kind: str
+    input_raw: np.ndarray
+    input_stats: dict[str, float]
+
+    if input_matrix_path is not None:
+        input_kind = "matrix_data"
+        input_raw = load_input_matrix_npz(input_matrix_path)
+        input_01, input_stats = normalize_input_tensor_01(input_raw)
+    else:
+        if ie2d is None:
+            raise ValueError("Either ie2d or input_matrix_path must be provided.")
+        input_kind = "meas_values"
+        _ = (value_kind, current_a)
+        meas_values_01, meas_stats = build_meas_values_vector_01(ie2d, expected_n=1578)
+        input_raw = meas_values_01
+        input_01, input_stats = normalize_input_tensor_01(meas_values_01)
+        # keep original stats naming for meas-vector mode
+        input_stats = {**meas_stats, **input_stats}
 
     return PreprocessResult(
-        meas_values_01=torch.from_numpy(meas_values_01),
+        input_tensor_01=torch.from_numpy(input_01),
         target_matrix_norm=torch.from_numpy(target_norm),
         x_coords=x_coords,
         z_coords=z_coords,
-        meas_stats=meas_stats,
+        input_kind=input_kind,
+        input_stats=input_stats,
+        input_tensor_raw=input_raw,
         target_stats=target_stats,
         target_matrix_raw=target_raw,
         value_kind=value_kind,

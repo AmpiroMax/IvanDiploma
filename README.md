@@ -2,22 +2,24 @@
 
 Модель для предсказания 2D матрицы по данным электроразведки (ERT).
 
-- **Вход:** `.dat` (измерения ABMN)
-- **Цель:** `.npz` с матрицей `float` размера **`(300, 600)`**
+- **Вход (актуально):** `.npz` с двухканальным полем `matrix_data` размера **`(29, 47, 2)`**
+- **Цель:** `.npz` с матрицей `float` размера **`(300, 600)`** (ключ `output_matrix_loaded`)
 - **Задача:** регрессия (не сегментация по классам)
 
 ---
 
 ## Установка
 
+Проект обычно запускается из conda env `ivan`.
+
 ```bash
 git clone <repo_url>
 cd IVAN
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-# source .venv/bin/activate  # Linux
-pip install -r requirenments.txt
-pip install -e .
+# пример (если conda доступна в PATH):
+# conda create -n ivan python=3.10 -y
+# conda activate ivan
+# pip install -r requirenments.txt
+# pip install -e .
 ```
 
 ---
@@ -27,40 +29,47 @@ pip install -e .
 ```text
 data/processed/
 ├── train/
-│   ├── electrical_resistivity_tomography/   # *.dat
-│   └── models/                              # *.npz (target matrix 300x600)
+│   ├── input/                               # *.npz (matrix_data: 29x47x2)
+│   └── output/                              # *.npz (output_matrix_loaded: 300x600)
 └── test/
-    ├── electrical_resistivity_tomography/   # *.dat
-    └── models/                              # *.npz
+    ├── input/                               # *.npz
+    └── output/                              # *.npz
 ```
 
 Пары подбираются по имени файла:
-`001.dat` ↔ `001.npz`.
+`001.npz` ↔ `001.npz` (input ↔ output).
 
 ---
 
 ## Что внутри `.npz`
 
-Ожидается 2D матрица с shape `(300, 600)` и float-значениями.  
-В текущих данных, например `data/processed/test/models/001.npz`, хранится массив:
+### Input
 
-- key: `output_matrix_loaded.npy`
-- dtype: `float64`
+`data/processed/*/input/*.npz`:
+
+- key: `matrix_data`
+- dtype: float
+- shape: `(29, 47, 2)` (в коде приводится к `(2, 29, 47)` и нормируется в `[0,1]`)
+
+### Output
+
+`data/processed/*/output/*.npz`:
+
+- key: `output_matrix_loaded`
+- dtype: float
 - shape: `(300, 600)`
 
 ---
 
 ## Пайплайн данных
 
-1. `iternet/io/ie2d.py` читает `.dat` в `IE2DResData`.
-2. `iternet/preprocessing.py`:
-   - строит `meas_tokens` из ABMN;
-   - загружает target-матрицу из `.npz`;
-   - делает нормализацию target для обучения:
-     - `signed_log = sign(v) * log1p(abs(v))`
-     - затем min-max в `[-1, 1]`.
-3. Модель предсказывает нормализованную матрицу.
-4. На инференсе выполняется обратное преобразование в исходный масштаб значений.
+1. `iternet/preprocessing.py` загружает `matrix_data` и нормирует вход по каналам в `[0,1]`.
+2. Target `output_matrix_loaded` используется **в raw масштабе** (без нормализации).
+3. Модель `IternetUNet` предсказывает карты `N/K/D` и проецирует в значение:
+   \[
+   \hat{y} = K \cdot 10^{N} + D
+   \]
+   Лосс считается на \(\hat{y}\) в raw-домене.
 
 ---
 
@@ -68,7 +77,7 @@ data/processed/
 
 ### DataConfig
 
-- `ie2d_res_path`: путь к входному `.dat`
+- `ie2d_res_path`: путь к входному `.npz` (или legacy `.dat`)
 - `target_matrix_path`: путь к target `.npz`
 - `value_kind`, `current_a`: параметры интерпретации последней колонки измерений
 
@@ -79,12 +88,14 @@ data/processed/
 
 ### ModelConfig
 
-- `token_dim`, `latent_dim`, `num_latents`, `num_layers`, `num_heads`, `dropout`
-- `out_channels=1` (регрессия одной матрицы)
+- `in_channels=2`
+- `base_channels=32`
+- `out_channels=1`
 
 ### TrainConfig
 
 - стандартные параметры обучения: `batch_size`, `epochs`, `lr`, `weight_decay`, `device`, `log_dir`
+- веса лосса: `mse_weight`, `mae_weight`, `boundary_loss_weight`, `boundary_weight_factor`, `boundary_weight_radius`
 
 ---
 
@@ -98,7 +109,7 @@ python -m iternet.scripts.train_batch --data_dir data/processed --epochs 50 --ba
 
 Логируемые метрики:
 
-- `loss` (регрессионный loss в нормализованном пространстве)
+- `loss` (регрессионный loss в raw-домене)
 - `MAE`
 - `RMSE`
 
@@ -111,7 +122,7 @@ python -m iternet.scripts.train_batch --data_dir data/processed --epochs 50 --ba
 - `open_training_data(...)`
 - `preprocess_data(...)`
 - `init_model(..., checkpoint_path=...)`
-- `predict_mask(...)` → возвращает **денормализованную float-матрицу** `(300, 600)`
+- `predict_mask(...)` → возвращает **raw float-матрицу** `(300, 600)`
 
 ---
 
@@ -126,8 +137,5 @@ python -m iternet.scripts.train_batch --data_dir data/processed --epochs 50 --ba
 
 ## Ноутбук
 
-`notebooks/maga_pipe.ipynb` содержит обновленный раздел:
-
-- **Matrix Regression Pipeline (Updated)**
-- self-contained пример: путь к `.dat`, `.npz`, чекпоинт, инференс, метрики (MAE/RMSE/MAPE/R2), grayscale-визуализация.
+Актуальный ноутбук: `notebooks/maga_pipe_regression.ipynb`.
 

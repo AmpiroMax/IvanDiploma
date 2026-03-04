@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,7 +22,7 @@ from torch.utils.data import DataLoader
 from iternet.config import GridConfig, ModelConfig, TrainConfig
 from iternet.data_discovery import discover_train_test
 from iternet.dataset import IternetDataset, collate_batch, collate_single
-from iternet.model import IternetPerceiver
+from iternet.model import IternetUNet
 from iternet.preprocessing import preprocess_pair
 from iternet.train import TrainHistory, train_segmentation
 
@@ -49,6 +50,7 @@ def _save_loss_iou_curves(
             train_epoch_loss.append(float(np.mean(history.losses[start:end])))
             train_epoch_rmse.append(float(np.mean(history.rmse[start:end])))
 
+    fig: Any
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     ep = np.arange(len(train_epoch_loss))
     ax1.plot(ep, train_epoch_loss, "b-", alpha=0.8, label="train")
@@ -72,12 +74,6 @@ def _save_loss_iou_curves(
     fig.tight_layout()
     fig.savefig(out_dir / "loss_iou_curves.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-
-
-def _infer_in_features(train_samples: list, grid_cfg: GridConfig) -> int:
-    """For meas_values-only mode input feature dim is always 1."""
-    _ = (train_samples, grid_cfg)
-    return 1
 
 
 def main() -> None:
@@ -123,8 +119,8 @@ def main() -> None:
         "z_max": grid_cfg.z_max,
     }
 
-    in_features = _infer_in_features(train_pairs, grid_cfg)
-    model_cfg = ModelConfig(out_channels=1)
+    # Processed mode: expects 2-channel input matrices (*.npz matrix_data)
+    model_cfg = ModelConfig()
 
     train_ds = IternetDataset(
         samples=train_pairs,
@@ -156,15 +152,16 @@ def main() -> None:
         num_workers=0,
     ) if test_pairs else None
 
-    model = IternetPerceiver(
-        in_features=in_features,
-        token_dim=model_cfg.token_dim,
-        latent_dim=model_cfg.latent_dim,
-        num_latents=model_cfg.num_latents,
-        num_layers=model_cfg.num_layers,
-        num_heads=model_cfg.num_heads,
+    if model_cfg.in_channels != 2:
+        raise SystemExit("This training script expects processed 2-channel input (.npz matrix_data).")
+    model = IternetUNet(
+        in_channels=model_cfg.in_channels,
+        patch_size=model_cfg.patch_size,
+        base_channels=model_cfg.base_channels,
+        depth=model_cfg.depth,
+        blocks_per_stage=model_cfg.blocks_per_stage,
+        stem_blocks=model_cfg.stem_blocks,
         out_channels=model_cfg.out_channels,
-        dropout=model_cfg.dropout,
     )
 
     log_dir = Path(args.log_dir)
@@ -182,6 +179,18 @@ def main() -> None:
         "x_max": args.x_max,
         "z_min": args.z_min,
         "z_max": args.z_max,
+        "model_in_channels": model_cfg.in_channels,
+        "model_patch_size": model_cfg.patch_size,
+        "model_base_channels": model_cfg.base_channels,
+        "model_depth": model_cfg.depth,
+        "model_blocks_per_stage": model_cfg.blocks_per_stage,
+        "model_stem_blocks": model_cfg.stem_blocks,
+        "model_out_channels": model_cfg.out_channels,
+        "mse_weight": TrainConfig.mse_weight,
+        "mae_weight": TrainConfig.mae_weight,
+        "boundary_weight_factor": TrainConfig.boundary_weight_factor,
+        "boundary_weight_radius": TrainConfig.boundary_weight_radius,
+        "boundary_loss_weight": TrainConfig.boundary_loss_weight,
     }
 
     history = train_segmentation(
@@ -194,6 +203,11 @@ def main() -> None:
         log_dir=log_dir,
         val_loader=val_loader,
         config_dict=config_dict,
+        mse_weight=TrainConfig.mse_weight,
+        mae_weight=TrainConfig.mae_weight,
+        boundary_weight_factor=TrainConfig.boundary_weight_factor,
+        boundary_weight_radius=TrainConfig.boundary_weight_radius,
+        boundary_loss_weight=TrainConfig.boundary_loss_weight,
     )
 
     print(f"Train samples: {len(train_pairs)}, Test samples: {len(test_pairs)}")
@@ -206,7 +220,20 @@ def main() -> None:
 
     # Save model
     ckpt_path = log_dir / "model.pt"
-    torch.save({"model": model.state_dict(), "out_channels": 1, "in_features": in_features}, ckpt_path)
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "arch": "patch_unet_poly_abcd",
+            "in_channels": model_cfg.in_channels,
+            "patch_size": model_cfg.patch_size,
+            "base_channels": model_cfg.base_channels,
+            "depth": model_cfg.depth,
+            "blocks_per_stage": model_cfg.blocks_per_stage,
+            "stem_blocks": model_cfg.stem_blocks,
+            "out_channels": model_cfg.out_channels,
+        },
+        ckpt_path,
+    )
     print(f"Model saved to {ckpt_path}")
 
 
