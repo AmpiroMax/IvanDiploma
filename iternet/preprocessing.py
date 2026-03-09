@@ -9,16 +9,19 @@ import torch
 from iternet.io.ie2d import IE2DResData
 from iternet.io.ie2d import IE2DMeasurement
 
+INPUT_LOG_SCALE_DEFAULT = 4000.0
+TARGET_LOG_SCALE_DEFAULT = 4000.0
+
 
 @dataclass(frozen=True)
 class PreprocessResult:
     """Single training sample tensors for matrix regression."""
 
     # Normalized model input:
-    # - from .dat: (1578,) values in [0,1]
-    # - from .npz (matrix_data): (2, H, W) values in [0,1]
+    # - from .dat: (1578,) globally compressed to [0,1]
+    # - from .npz (matrix_data): (2, H, W) globally compressed to [0,1]
     input_tensor_01: torch.Tensor
-    # Target matrix (raw values, no normalization): (Z, X), float32
+    # Target matrix in compressed domain used for optimization: (Z, X), float32
     target_matrix_norm: torch.Tensor
 
     # Grid for visualization / reconstruction
@@ -32,6 +35,56 @@ class PreprocessResult:
     target_stats: dict[str, float]
     target_matrix_raw: np.ndarray
     value_kind: str
+
+
+def _signed_log1p_np(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float32)
+    return np.sign(x) * np.log1p(np.abs(x))
+
+
+def signed_log1p_torch(x: torch.Tensor) -> torch.Tensor:
+    return torch.sign(x) * torch.log1p(torch.abs(x))
+
+
+def compress_target_np(target_raw: np.ndarray, *, log_scale: float = TARGET_LOG_SCALE_DEFAULT) -> tuple[np.ndarray, dict[str, float]]:
+    """
+    Compress raw target values into a smoother optimization domain.
+
+    We keep the model in raw value space, but compare predictions in this
+    compressed domain to reduce domination of large amplitudes.
+    """
+    scale = max(float(log_scale), 1.0)
+    denom = np.log1p(scale)
+    target_comp = (_signed_log1p_np(target_raw) / denom).astype(np.float32)
+    stats = {
+        "target_transform": "signed_log1p",
+        "target_log_scale": scale,
+        "target_raw_min": float(np.min(target_raw)),
+        "target_raw_max": float(np.max(target_raw)),
+        "target_comp_min": float(np.min(target_comp)),
+        "target_comp_max": float(np.max(target_comp)),
+    }
+    return target_comp, stats
+
+
+def decompress_target_np(target_comp: np.ndarray, *, log_scale: float = TARGET_LOG_SCALE_DEFAULT) -> np.ndarray:
+    scale = max(float(log_scale), 1.0)
+    denom = np.log1p(scale)
+    signed_log = np.asarray(target_comp, dtype=np.float32) * denom
+    return (np.sign(signed_log) * np.expm1(np.abs(signed_log))).astype(np.float32)
+
+
+def compress_target_torch(target_raw: torch.Tensor, *, log_scale: float = TARGET_LOG_SCALE_DEFAULT) -> torch.Tensor:
+    scale = max(float(log_scale), 1.0)
+    denom = float(np.log1p(scale))
+    return signed_log1p_torch(target_raw) / denom
+
+
+def decompress_target_torch(target_comp: torch.Tensor, *, log_scale: float = TARGET_LOG_SCALE_DEFAULT) -> torch.Tensor:
+    scale = max(float(log_scale), 1.0)
+    denom = float(np.log1p(scale))
+    signed_log = target_comp * denom
+    return torch.sign(signed_log) * torch.expm1(torch.abs(signed_log))
 
 
 def _grid_from_overrides(*, nx: int, nz: int, overrides: dict[str, float | None]) -> tuple[np.ndarray, np.ndarray]:
@@ -92,37 +145,44 @@ def load_input_matrix_npz(path: str | Path) -> np.ndarray:
     return arr.astype(np.float32, copy=False)
 
 
-def normalize_input_tensor_01(x_raw: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
+def normalize_input_tensor_01(x_raw: np.ndarray, *, log_scale: float = INPUT_LOG_SCALE_DEFAULT) -> tuple[np.ndarray, dict[str, float]]:
     """
-    Normalize input into [0,1].
+    Compress input into [0,1] while preserving global amplitude information.
 
-    - For 1D vectors: min-max across the vector.
-    - For CHW images: per-channel min-max.
+    Strategy:
+    - clamp tiny negative noise to 0 for matrix inputs,
+    - apply log1p compression with a fixed global scale,
+    - keep absolute scale comparable across samples.
     """
-    eps = 1e-9
+    scale = max(float(log_scale), 1.0)
+    denom = np.log1p(scale)
     x = x_raw.astype(np.float32, copy=False)
 
     if x.ndim == 1:
-        vmin = float(np.min(x))
-        vmax = float(np.max(x))
-        denom = max(vmax - vmin, eps)
-        x01 = np.clip((x - vmin) / denom, 0.0, 1.0).astype(np.float32)
-        stats = {"in_min": vmin, "in_max": vmax}
+        xpos = np.maximum(x, 0.0)
+        x01 = np.clip(np.log1p(xpos) / denom, 0.0, 1.0).astype(np.float32)
+        stats = {
+            "in_min": float(np.min(x)),
+            "in_max": float(np.max(x)),
+            "input_log_scale": scale,
+            "input_transform": "log1p_global_01",
+        }
         return x01, stats
 
     if x.ndim == 3:
         if x.shape[0] != 2:
             raise ValueError(f"Expected CHW with C=2, got {x.shape}")
+        xpos = np.maximum(x, 0.0)
+        x01 = np.clip(np.log1p(xpos) / denom, 0.0, 1.0).astype(np.float32)
         mins = x.reshape(2, -1).min(axis=1)
         maxs = x.reshape(2, -1).max(axis=1)
-        denom = np.maximum(maxs - mins, eps)
-        x01 = (x - mins[:, None, None]) / denom[:, None, None]
-        x01 = np.clip(x01, 0.0, 1.0).astype(np.float32)
         stats = {
             "ch0_min": float(mins[0]),
             "ch0_max": float(maxs[0]),
             "ch1_min": float(mins[1]),
             "ch1_max": float(maxs[1]),
+            "input_log_scale": scale,
+            "input_transform": "log1p_global_01",
         }
         return x01, stats
 
@@ -130,28 +190,14 @@ def normalize_input_tensor_01(x_raw: np.ndarray) -> tuple[np.ndarray, dict[str, 
 
 
 def normalize_target_matrix(target_raw: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
-    """
-    Normalize target matrix into [-1,1].
-
-    Uses sign-log compression first to stabilize large amplitudes:
-        signed_log = sign(v) * log1p(abs(v))
-    then min-max scaling to [-1,1].
-    """
-    signed_log = np.sign(target_raw) * np.log1p(np.abs(target_raw))
-    vmin = float(np.min(signed_log))
-    vmax = float(np.max(signed_log))
-    denom = max(vmax - vmin, 1e-9)
-    target_norm = (2.0 * (signed_log - vmin) / denom - 1.0).astype(np.float32)
-    stats = {"signed_log_min": vmin, "signed_log_max": vmax}
-    return target_norm, stats
+    """Backward-compatible alias for the current compressed target transform."""
+    return compress_target_np(target_raw)
 
 
 def denormalize_target_matrix(target_norm: np.ndarray, stats: dict[str, float]) -> np.ndarray:
-    """Map normalized model output [-1,1] back to original target value range."""
-    vmin = float(stats["signed_log_min"])
-    vmax = float(stats["signed_log_max"])
-    signed_log = ((np.clip(target_norm, -1.0, 1.0) + 1.0) * 0.5) * (vmax - vmin) + vmin
-    return (np.sign(signed_log) * (np.expm1(np.abs(signed_log)))).astype(np.float32)
+    """Backward-compatible alias for the current compressed target inverse transform."""
+    log_scale = float(stats.get("target_log_scale", TARGET_LOG_SCALE_DEFAULT))
+    return decompress_target_np(target_norm, log_scale=log_scale)
 
 
 def build_meas_values_vector_01(
@@ -381,9 +427,7 @@ def preprocess_pair(
     grid_overrides = grid_overrides or {}
     x_coords, z_coords = _grid_from_overrides(nx=nx, nz=nz, overrides=grid_overrides)
     target_raw = load_target_matrix_npz(target_matrix_path, expected_shape=(nz, nx))
-    # Output normalization is disabled: we train and predict raw values directly.
-    target_norm = target_raw.astype(np.float32, copy=False)
-    target_stats = {"target_min": float(np.min(target_norm)), "target_max": float(np.max(target_norm))}
+    target_norm, target_stats = compress_target_np(target_raw)
 
     input_kind: str
     input_raw: np.ndarray

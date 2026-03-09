@@ -46,7 +46,7 @@ class GridConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """U-Net + polynomial projection model config (regression)."""
+    """Patch-UNet + Swin-style attention + digit-polynomial projection."""
 
     # Processed input: matrix_data -> (B, 2, 29, 47)
     in_channels: int = 2
@@ -67,6 +67,13 @@ class ModelConfig:
     # Extra conv blocks right after patch embedding
     stem_blocks: int = 2
 
+    # Swin-style local self-attention parameters.
+    num_heads: int = 4
+    window_size: int = 4
+
+    # Progressive decoder to final (Z, X) resolution.
+    output_upsample_stages: int = 3
+
     # The polynomial projection outputs a single scalar per pixel:
     # y = A*1000 + B*100 + C*10 + D
     out_channels: int = 1
@@ -83,6 +90,11 @@ class TrainConfig:
 
     device: str = "cuda"
     log_dir: Path = Path("iternet/runs")
+
+    # Learning-rate schedule.
+    scheduler_name: str = "cosine"
+    warmup_epochs: int = 2
+    min_lr_ratio: float = 0.1
 
     # Loss weights (total = mse_weight*MSE + mae_weight*MAE + boundary_loss_weight*BoundaryMAE)
     mse_weight: float = 1.0

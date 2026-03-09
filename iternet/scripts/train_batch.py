@@ -161,6 +161,9 @@ def main() -> None:
         depth=model_cfg.depth,
         blocks_per_stage=model_cfg.blocks_per_stage,
         stem_blocks=model_cfg.stem_blocks,
+        num_heads=model_cfg.num_heads,
+        window_size=model_cfg.window_size,
+        output_upsample_stages=model_cfg.output_upsample_stages,
         out_channels=model_cfg.out_channels,
     )
 
@@ -185,7 +188,13 @@ def main() -> None:
         "model_depth": model_cfg.depth,
         "model_blocks_per_stage": model_cfg.blocks_per_stage,
         "model_stem_blocks": model_cfg.stem_blocks,
+        "model_num_heads": model_cfg.num_heads,
+        "model_window_size": model_cfg.window_size,
+        "model_output_upsample_stages": model_cfg.output_upsample_stages,
         "model_out_channels": model_cfg.out_channels,
+        "scheduler_name": TrainConfig.scheduler_name,
+        "warmup_epochs": TrainConfig.warmup_epochs,
+        "min_lr_ratio": TrainConfig.min_lr_ratio,
         "mse_weight": TrainConfig.mse_weight,
         "mae_weight": TrainConfig.mae_weight,
         "boundary_weight_factor": TrainConfig.boundary_weight_factor,
@@ -208,6 +217,9 @@ def main() -> None:
         boundary_weight_factor=TrainConfig.boundary_weight_factor,
         boundary_weight_radius=TrainConfig.boundary_weight_radius,
         boundary_loss_weight=TrainConfig.boundary_loss_weight,
+        scheduler_name=TrainConfig.scheduler_name,
+        warmup_epochs=TrainConfig.warmup_epochs,
+        min_lr_ratio=TrainConfig.min_lr_ratio,
     )
 
     print(f"Train samples: {len(train_pairs)}, Test samples: {len(test_pairs)}")
@@ -223,13 +235,16 @@ def main() -> None:
     torch.save(
         {
             "model": model.state_dict(),
-            "arch": "patch_unet_poly_abcd",
+            "arch": "swin_patch_unet_digit_abcd",
             "in_channels": model_cfg.in_channels,
             "patch_size": model_cfg.patch_size,
             "base_channels": model_cfg.base_channels,
             "depth": model_cfg.depth,
             "blocks_per_stage": model_cfg.blocks_per_stage,
             "stem_blocks": model_cfg.stem_blocks,
+            "num_heads": model_cfg.num_heads,
+            "window_size": model_cfg.window_size,
+            "output_upsample_stages": model_cfg.output_upsample_stages,
             "out_channels": model_cfg.out_channels,
         },
         ckpt_path,

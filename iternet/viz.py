@@ -245,10 +245,9 @@ def plot_abcd_components(
 
     extent = _extent_from_coords(x_coords, z_coords)
 
-    avmin, avmax = _robust_limits(a)
-    bvmin, bvmax = _robust_limits(b)
-    cvmin, cvmax = _robust_limits(c)
     dvmin, dvmax = _robust_limits(d)
+    digit_cmap = plt.get_cmap("coolwarm", 19)
+    digit_norm = mcolors.BoundaryNorm(np.arange(-9.5, 10.5, 1.0), digit_cmap.N)
 
     fig, axes = plt.subplots(1, 4, figsize=(22, 5))
     axa, axb, axc, axd = axes
@@ -257,40 +256,37 @@ def plot_abcd_components(
         a,
         origin="upper",
         aspect="equal" if extent is not None else "auto",
-        cmap="viridis",
-        vmin=avmin,
-        vmax=avmax,
+        cmap=digit_cmap,
+        norm=digit_norm,
         interpolation="nearest",
         extent=extent,
     )
-    axa.set_title("A (×1000)")
-    fig.colorbar(ima, ax=axa, shrink=0.85)
+    axa.set_title("A digit [-9..9] (×1000)")
+    fig.colorbar(ima, ax=axa, shrink=0.85, ticks=list(range(-9, 10, 3)))
 
     imb = axb.imshow(
         b,
         origin="upper",
         aspect="equal" if extent is not None else "auto",
-        cmap="viridis",
-        vmin=bvmin,
-        vmax=bvmax,
+        cmap=digit_cmap,
+        norm=digit_norm,
         interpolation="nearest",
         extent=extent,
     )
-    axb.set_title("B (×100)")
-    fig.colorbar(imb, ax=axb, shrink=0.85)
+    axb.set_title("B digit [-9..9] (×100)")
+    fig.colorbar(imb, ax=axb, shrink=0.85, ticks=list(range(-9, 10, 3)))
 
     imc = axc.imshow(
         c,
         origin="upper",
         aspect="equal" if extent is not None else "auto",
-        cmap="viridis",
-        vmin=cvmin,
-        vmax=cvmax,
+        cmap=digit_cmap,
+        norm=digit_norm,
         interpolation="nearest",
         extent=extent,
     )
-    axc.set_title("C (×10)")
-    fig.colorbar(imc, ax=axc, shrink=0.85)
+    axc.set_title("C digit [-9..9] (×10)")
+    fig.colorbar(imc, ax=axc, shrink=0.85, ticks=list(range(-9, 10, 3)))
 
     imd = axd.imshow(
         d,
@@ -302,7 +298,7 @@ def plot_abcd_components(
         interpolation="nearest",
         extent=extent,
     )
-    axd.set_title("D (×1)")
+    axd.set_title("D residual")
     fig.colorbar(imd, ax=axd, shrink=0.85)
 
     for ax in axes:

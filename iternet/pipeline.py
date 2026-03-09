@@ -134,7 +134,7 @@ def analyze_sample(prep: PreparedData, raw: RawData | None = None) -> Figures:
         meas_fig=meas_fig,
         rho_fig=plot_prediction(
             sample.target_matrix_norm.numpy(),
-            title="Target matrix (train tensor, raw domain)",
+            title="Target matrix (train tensor, compressed domain)",
             x_coords=sample.x_coords,
             z_coords=sample.z_coords,
         ),
@@ -162,6 +162,9 @@ def init_model(
         depth=model_cfg.depth,
         blocks_per_stage=model_cfg.blocks_per_stage,
         stem_blocks=model_cfg.stem_blocks,
+        num_heads=model_cfg.num_heads,
+        window_size=model_cfg.window_size,
+        output_upsample_stages=model_cfg.output_upsample_stages,
         out_channels=model_cfg.out_channels,
     )
     if checkpoint_path is not None:
@@ -227,7 +230,7 @@ def predict_and_visualize(
         else plot_measurements_tokens(prep.sample.input_tensor_01.unsqueeze(1).numpy(), title="Measurement values (1578) [0..1]"),
         rho_fig=plot_prediction(
             prep.sample.target_matrix_norm.numpy(),
-            title="Target matrix (train tensor, raw domain)",
+            title="Target matrix (train tensor, compressed domain)",
             x_coords=prep.sample.x_coords,
             z_coords=prep.sample.z_coords,
         ),
@@ -278,6 +281,9 @@ def train_model(model: IternetUNet, prep: PreparedData, train_cfg: TrainConfig) 
         boundary_weight_factor=train_cfg.boundary_weight_factor,
         boundary_weight_radius=train_cfg.boundary_weight_radius,
         boundary_loss_weight=train_cfg.boundary_loss_weight,
+        scheduler_name=train_cfg.scheduler_name,
+        warmup_epochs=train_cfg.warmup_epochs,
+        min_lr_ratio=train_cfg.min_lr_ratio,
         config_dict=config_dict,
     )
     return history
